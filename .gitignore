@@ -1,0 +1,17 @@
+# Entornos y caches
+.venv/
+venv/
+__pycache__/
+.ipynb_checkpoints/
+.env
+*.pyc
+
+# Sistema operativo / editores
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+
+# Datos crudos pesados: el parquet (~138 MB) supera el límite de 100 MB por archivo de GitHub.
+# Se obtiene con src/descargar_datos.py (ver README, sección Adquisición).
+data/raw/*.parquet
