@@ -840,3 +840,156 @@ estilo.guardar(g.figure, "v5_multidimensional_estacionalidad", FIGURAS)
 # La carga cognitiva aumentaría (el lector debería cruzar color + forma + panel) y la legibilidad caería.
 # La alternativa correcta sería **más facetas** (una fila por aeropuerto principal) o un gráfico distinto,
 # no más canales sobre el mismo panel.
+
+# %% [markdown]
+# ## 12. Benchmark visual (Parte XVI)
+#
+# **Pregunta P2:** ¿cómo evolucionó la actividad y cómo se recuperó tras 2020?
+#
+# * **Visualización A:** líneas con índice 2019 = 100 por tipo de tráfico (Visualización 2).
+# * **Visualización B:** mapa de calor año × mes con el total mensual de operaciones (valores absolutos).
+
+# %%
+p_b = mensual.query("anio_completo").pivot_table(index="anio", columns="mes", values="n_operaciones", aggfunc="sum")
+p_b.columns = prep.MESES
+fig, ax = plt.subplots(figsize=(9.5, 8))
+sns.heatmap(p_b / 1000, cmap=sns.blend_palette(estilo.RAMPA_AZUL, as_cmap=True), linewidths=1,
+            linecolor=estilo.SUPERFICIE, cbar_kws={"label": "Operaciones mensuales (miles)", "shrink": 0.6}, ax=ax)
+ax.set_xlabel("")
+ax.set_ylabel("")
+ax.tick_params(length=0)
+ax.set_title("Benchmark B — Operaciones mensuales totales, 2000-2025")
+estilo.subtitulo(ax, "Doméstico + internacional · color = volumen (miles de operaciones)")
+estilo.nota_fuente(fig)
+estilo.guardar(fig, "v6_benchmark_heatmap_anio_mes", FIGURAS)
+
+# %% [markdown]
+# | Criterio | Visualización A (líneas, índice 2019) | Visualización B (heatmap año × mes) |
+# |---|---|---|
+# | **Claridad** | Alta: dos líneas, un eje, mensaje directo | Media: el patrón general se ve, pero hay que recorrer 312 celdas |
+# | **Precisión** | Alta: posición sobre eje común (el canal más preciso) | Baja: el color permite comparar "más o menos", no estimar valores |
+# | **Comparabilidad** | Directa entre doméstico e internacional (misma base) | No distingue tipos de tráfico (los suma); compara bien meses entre sí |
+# | **Densidad informativa** | Baja-media: 52 puntos anuales | Alta: 312 valores mensuales, muestra estacionalidad y el hueco de abril 2020 |
+# | **Carga cognitiva** | Baja | Media-alta: requiere leer la escala de color |
+# | **Utilidad para P2** | Responde la pregunta y permite evaluar H1 | Útil como exploración complementaria; no permite evaluar H1 |
+#
+# **¿Cuál debería utilizarse y por qué?** La **visualización A**. P2 y la hipótesis H1 piden comparar
+# *dos series* respecto de *su propio nivel previo*, y eso requiere posición sobre un eje común,
+# que es justamente lo que el heatmap no ofrece (codifica la magnitud en color y suma ambos tráficos).
+# El heatmap aporta algo que A pierde —la estacionalidad mensual y el momento exacto del desplome
+# (abril 2020)— por lo que es un buen complemento exploratorio, pero no la visualización principal.
+
+# %% [markdown]
+# ## 13. Validación de las visualizaciones definitivas (Parte XVII)
+#
+# Se auditan las dos visualizaciones más importantes: **V1 (comparación entre aeropuertos)** y
+# **V2 (evolución e índice 2019)**. Primero se verifican por código las cifras que muestran.
+
+# %%
+# V1: los totales graficados coinciden con la suma directa del CSV original
+check_v1 = csv_raw[csv_raw["mes_id"] // 100 == 2025].groupby("aeropuerto_oaci")["cnt_operaciones"].sum()
+assert (check_v1.loc[p1_top.index] == p1_top["Total"]).all()
+assert p1["Total"].sum() == check_v1.sum()
+# V2: el índice 2019 vale exactamente 100 y los niveles anuales suman el total del CSV para 2000-2025
+assert np.allclose(p2_indice.loc[2019], 100)
+assert p2.to_numpy().sum() == csv_raw.loc[csv_raw["mes_id"] < 202601, "cnt_operaciones"].sum()
+print("Validación numérica OK: V1 y V2 reproducen exactamente los totales del archivo original.")
+print(f"SCEL: {p1.loc['SCEL', 'Total'] / p1['Total'].sum():.1%} del total 2025 y "
+      f"{p1.loc['SCEL', 'Internacional'] / p1['Internacional'].sum():.1%} del tráfico internacional; "
+      f"top 15 = {p1.head(15)['Total'].sum() / p1['Total'].sum():.1%}")
+
+# %% [markdown]
+# | Aspecto | V1 — Barras apiladas por aeropuerto 2025 | V2 — Líneas, índice 2019 = 100 |
+# |---|---|---|
+# | **Propósito** | Mostrar concentración y rol internacional de cada aeropuerto | Comparar caída y recuperación de dos tipos de tráfico |
+# | **Audiencia** | Planificación aeroportuaria / autoridad (JAC, DGAC), público general informado | Igual; especialmente quien evalúa recuperación post-pandemia |
+# | **Selección de datos** | 2025 (último año completo); top 15 de 54 (83,7 % del total), el resto se declara en el subtítulo | 2000-2025; se excluye 2026 por estar incompleto (9 meses) |
+# | **Agregación** | Suma anual por aeropuerto × tráfico | Suma anual por tráfico; se pierde la estacionalidad (cubierta por V5 y el benchmark) |
+# | **Escalas** | Lineal desde 0 (obligatorio en barras) | Índice; eje Y desde 30, *no* desde 0: es un gráfico de líneas sobre un índice y el 0 no es una referencia relevante; la línea base es 100 y está marcada |
+# | **Color** | 2 colores con significado (tráfico), consistentes en todo el proyecto, validados para daltonismo | Mismos 2 colores; etiquetas directas, por lo que no depende sólo del color |
+# | **Dimensiones** | Aeropuerto (Y), operaciones (X), tráfico (color) | Año (X), índice (Y), tráfico (color) |
+# | **Legibilidad** | Etiquetas de total y % internacional; códigos OACI legibles en horizontal | Mínimos 2020-2021 anotados; banda de pandemia sombreada |
+# | **Integridad** | Totales verificados contra el CSV (assert) | Índice y sumas verificados (assert); volúmenes 2019 declarados en la nota |
+# | **Posibles sesgos** | El top 15 oculta 39 aeródromos pequeños; los códigos OACI no dicen nada a un público general | El índice hace ver al internacional "creciendo más" aunque en volumen absoluto es ~5 veces menor |
+# | **Interpretación errónea posible** | Leer SCEL como "aeropuerto de Santiago" completo: SCTB y otros también están en la RM | Atribuir la diferencia de recuperación a una causa concreta (cierre de fronteras, aerolíneas) que los datos no contienen |
+# | **Limitaciones** | Excluye vuelos militares/policiales y aeródromos no DGAC; no hay pasajeros ni carga, sólo operaciones | Las operaciones no miden pasajeros: un mismo número de vuelos puede transportar distinto volumen |
+
+# %% [markdown]
+# ## 14. Interpretación (Parte XVIII)
+#
+# **HALLAZGO 1 — La actividad está muy concentrada y el tráfico internacional casi no se descentraliza.**
+# * *Datos utilizados:* CSV procesado, año 2025, 54 aeropuertos.
+# * *Evidencia:* SCEL registra 176.740 operaciones (33,7 % del total nacional) y 80.362 internacionales,
+#   el 97,3 % de todo el tráfico internacional del país. Ningún otro aeropuerto supera el 4 % internacional.
+# * *Visualización:* V1.
+# * *Interpretación:* el sistema funciona con un único punto de entrada internacional relevante.
+# * *Posible utilidad:* priorización de capacidad, planes de contingencia (una interrupción en SCEL afecta casi todo el tráfico internacional).
+# * *Limitación:* se cuentan operaciones, no pasajeros ni carga; no se observan vuelos militares ni aeródromos sin DGAC.
+#
+# **HALLAZGO 2 — La recuperación post-2020 fue asimétrica: el internacional cayó más, tocó fondo un año después y luego superó su nivel previo.**
+# * *Datos utilizados:* CSV procesado, 2000-2025, agregado anual por tipo de tráfico.
+# * *Evidencia:* índice 2019 = 100 → doméstico mínimo 57,8 (2020) y vuelve a ≥ 100 en 2023; internacional
+#   mínimo 37,5 (2021, un año después) y vuelve a ≥ 100 en 2024. En 2025: doméstico 102, internacional 112.
+# * *Visualización:* V2 (y V5 para el detalle mensual: abril 2020 fue el mes más bajo en ambos).
+# * *Interpretación:* **H1 es consistente con los datos** (descriptivamente): el internacional tardó un año
+#   más en recuperarse. Los datos no permiten afirmar *por qué* (restricciones sanitarias, demanda, oferta de
+#   aerolíneas); sólo describen el patrón.
+# * *Posible utilidad:* monitorear si el crecimiento internacional sobre 2019 se sostiene en 2026 para planificar capacidad en SCEL.
+# * *Limitación:* nivel anual; 2026 incompleto; no hay variables explicativas en el dataset.
+#
+# **HALLAZGO 3 — Conviven dos sistemas de aviación con tamaños y horarios distintos.**
+# * *Datos utilizados:* bitácora 2025 procesada (524.301 aterrizajes y despegues; 99,98 % con PMD válido).
+# * *Evidencia:* la distribución del PMD es bimodal (≈1 t y 70-90 t); 54 % de las operaciones son de
+#   aeronaves pesadas (> 50 t) y 40 % ligeras (< 5,7 t). Entre 00:00 y 05:59 ocurre el 11,4 % de las
+#   operaciones pesadas, frente al 0,8 % de las ligeras, cuyo pico es a las 12:00.
+# * *Visualización:* V3 y V4.
+# * *Interpretación:* "la operación promedio" no existe: mezclar segmentos produce promedios engañosos
+#   (la mediana de 77 t no describe a las avionetas). La aviación ligera opera casi exclusivamente de día.
+# * *Posible utilidad:* asignar personal y servicios de torre/plataforma por franja horaria según el tipo de aeropuerto.
+# * *Limitación:* un solo año; la categoría depende de un PMD con ~2,7 % de valores inválidos en la serie
+#   completa; la asociación hora-tamaño no implica causalidad.
+
+# %% [markdown]
+# ## 15. Ética profesional (Parte XIX)
+#
+# **Decisión analizada:** usar un **índice base 2019 = 100** en la Visualización 2 en lugar de valores absolutos.
+#
+# * **¿Qué decisión tomé?** Dividir las operaciones anuales de cada tipo de tráfico por su valor de 2019.
+# * **¿Qué evidencia la sustentó?** El doméstico (431.929 en 2019) es 5,8 veces el internacional (73.857);
+#   en un eje absoluto la caída internacional se vería casi plana, y la pregunta es sobre recuperación relativa.
+# * **¿Qué otra decisión pude adoptar?** (a) valores absolutos en un eje; (b) dos ejes Y; (c) base en otro
+#   año (2018, 2000); (d) facetas con ejes independientes.
+# * **¿Cómo afecta al resultado?** El índice hace que el internacional *parezca* el gran ganador (112 vs. 102),
+#   cuando en volumen absoluto el doméstico sumó más operaciones sobre 2019 (+9.785) que el internacional (+8.730).
+#   Además, la elección del año base cambia el relato: 2019 fue un año alto para el internacional
+#   (base 2018 = 103,4); con otra base las cifras de "recuperación" cambian.
+# * **¿Puede modificar la percepción del lector?** Sí: puede inducir a creer que el internacional "importa más"
+#   o crece más en términos de actividad total.
+# * **¿Qué debería declarar al presentar el gráfico?** Que es un **índice** (está en el título del eje y el
+#   subtítulo), cuál es el año base y por qué, y los **volúmenes absolutos** del año base (incluidos en la nota
+#   al pie). También debo declarar que las operaciones no equivalen a pasajeros.
+#
+# **Decisión complementaria declarada:** el CSV oficial incluye ~1.100 operaciones duplicadas que eliminé de la
+# bitácora pero no puedo eliminar del resumen mensual (ya viene agregado). Lo declaro en lugar de "corregir"
+# el CSV a mano, lo que violaría la regla de preservación de los datos originales.
+
+# %% [markdown]
+# ## 16. Conclusiones
+#
+# 1. El proceso completo es **reproducible**: los datos se descargan con `src/descargar_datos.py`, los
+#    originales no se modifican y todas las transformaciones están en este notebook y en `src/`.
+# 2. La calidad general de la fuente es buena (sin nulos en variables clave, coincidencia del 99,3 % entre
+#    bitácora y resumen), pero hay problemas reales que afectan visualizaciones: ausentes ocultos como
+#    cadenas vacías, PMD en unidades mezcladas, duplicados, una zona horaria distinta a la documentada y un
+#    nombre de columna inconsistente.
+# 3. La actividad aérea registrada está **fuertemente concentrada** en SCEL, que canaliza casi todo el
+#    tráfico internacional (Hallazgo 1).
+# 4. **H1 es consistente con los datos:** el tráfico internacional tardó un año más que el doméstico en volver
+#    al nivel 2019 y hoy lo supera más en términos relativos (Hallazgo 2), sin que el dataset permita explicar la causa.
+# 5. Los promedios esconden **dos poblaciones de aeronaves** con horarios distintos; segmentar es indispensable (Hallazgo 3).
+# 6. Como diseñador, la principal lección es que la elección de la representación (índice vs. absoluto,
+#    líneas vs. heatmap, escala log) es una decisión con consecuencias que debe declararse.
+#
+# **Limitaciones generales:** no hay pasajeros, carga ni coordenadas; excluye aviación militar/policial y
+# aeródromos no DGAC; el último mes es provisional; los códigos de actividad y aerolíneas son internos DGAC
+# sin diccionario público en la fuente.
