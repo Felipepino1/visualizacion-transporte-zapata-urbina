@@ -474,3 +474,125 @@ del con_dups, cruce_dups
 # %%
 mensual.to_csv(PROCESSED / "operaciones_mensuales_procesado.csv", index=False)
 print("Guardado: data/processed/operaciones_mensuales_procesado.csv", mensual.shape)
+
+# %% [markdown]
+# ## 8. Ingeniería de variables (Parte IX)
+#
+# | Variable derivada | Origen | Transformación | Significado | Utilidad analítica |
+# |---|---|---|---|---|
+# | `fecha`, `anio`, `mes` | `mes_id` (CSV) | `to_datetime(format="%Y%m")` → `.dt.year`, `.dt.month` | Periodo de la operación | Jerarquía temporal Año → Mes; series y estacionalidad (P2) |
+# | `tipo_trafico` | `internacional_domestico` / `es_internacional` | Mapeo D/I → "Doméstico"/"Internacional" | Ámbito del vuelo | Segmentación legible en leyendas (P1, P2) |
+# | `indice_2019` | `n_operaciones` anual por tráfico | `valor / valor_2019 × 100` | Nivel relativo al último año pre-pandemia | Compara recuperación de series de escala muy distinta en **un solo eje** (P2, H1) |
+# | `participacion_internacional` | `n_operaciones` por aeropuerto | `internacional / total` | Proporción internacional | Caracteriza el rol de cada aeropuerto (P1) |
+# | `dt_local`, `hora`, `dia_semana`, `fin_de_semana` | `dt_operacion` + zona por aeropuerto | Conversión de zona; `.dt.hour`, `.dt.dayofweek` | Momento local de la operación | Patrón diario y semanal (P3) |
+# | `categoria_peso` | `pmd` | `pd.cut` en 5,7 t (umbral OACI de aeronave ligera) y 50 t | Tamaño de aeronave | Separa aviación general/instrucción de la comercial (P3) |
+
+# %%
+# Variables a nivel de vuelo: se trabaja con 2025, último año completo
+b25 = bit[bit["dt_local"].dt.year == 2025].copy()
+b25["hora"] = b25["dt_local"].dt.hour
+b25["dia_semana"] = pd.Categorical(b25["dt_local"].dt.dayofweek.map(dict(enumerate(prep.DIAS))),
+                                   categories=prep.DIAS, ordered=True)
+b25["fin_de_semana"] = b25["dt_local"].dt.dayofweek >= 5
+b25["categoria_peso"] = prep.categoria_peso(b25["pmd"])
+b25["tipo_trafico"] = np.where(b25["es_internacional"], "Internacional", "Doméstico")
+for c in b25.select_dtypes("category"):
+    b25[c] = b25[c].cat.remove_unused_categories()
+print(f"Operaciones 2025: {len(b25):,}")
+b25[["dt_local", "hora", "dia_semana", "fin_de_semana", "pmd", "categoria_peso", "tipo_trafico"]].head()
+
+# %%
+b25["categoria_peso"].value_counts(dropna=False)
+
+# %%
+cols_guardar = ["dt_operacion", "dt_local", "aeropuerto_oaci", "tipo_operacion", "aeropuerto_dgac_orig_dest",
+                "aerolinea_dgac", "actividad_cod", "modelo_avion", "es_internacional", "pmd",
+                "hora", "dia_semana", "fin_de_semana", "categoria_peso", "tipo_trafico"]
+b25[cols_guardar].to_parquet(PROCESSED / "bitacora_2025_procesada.parquet", index=False, compression="zstd")
+print("Guardado: data/processed/bitacora_2025_procesada.parquet",
+      f"({(PROCESSED / 'bitacora_2025_procesada.parquet').stat().st_size / 1e6:.1f} MB)")
+
+# %% [markdown]
+# ## 9. Dimensionalidad (Parte X)
+#
+# | Variable | Tipo | Dimensión / Medida / ID | Cardinalidad | Función en el análisis |
+# |---|---|---|---|---|
+# | `mes_id` / `fecha` | Temporal | Dimensión | 321 meses | Eje temporal de P2 |
+# | `anio` | Temporal (numérica discreta) | Dimensión | 27 | Nivel superior de la jerarquía temporal |
+# | `mes` | Categórica ordinal | Dimensión | 12 | Estacionalidad (visualización multidimensional) |
+# | `aeropuerto_oaci` | Categórica nominal | Dimensión | 69 | Comparación entre aeropuertos (P1) |
+# | `internacional_domestico` / `tipo_trafico` | Categórica nominal (binaria) | Dimensión | 2 | Segmentación (P1, P2) |
+# | `n_operaciones` | Numérica discreta | **Medida** (aditiva) | 2.837 | Volumen de actividad |
+# | `indice_2019` | Numérica continua | Medida derivada (no aditiva) | — | Recuperación relativa (P2) |
+# | `participacion_internacional` | Numérica continua (0-1) | Medida derivada (no aditiva) | — | Rol del aeropuerto (P1) |
+# | `dt_operacion` / `dt_local` | Temporal | Dimensión (granularidad minuto) | 6,5 M | Base de hora y día |
+# | `hora` | Numérica discreta / ordinal | Dimensión | 24 | Patrón diario (P3) |
+# | `dia_semana` | Categórica ordinal | Dimensión | 7 | Patrón semanal (P3) |
+# | `tipo_operacion` | Categórica nominal | Dimensión | 3 (A/D/W) | Filtro (sobrevuelos fuera) |
+# | `pmd` | Numérica continua (t) | Medida (no aditiva) | 785 | Distribución de tamaño (P3) |
+# | `categoria_peso` | Categórica ordinal | Dimensión derivada | 3 | Segmentación por tamaño (P3) |
+# | `actividad_cod` | Categórica nominal | Dimensión | 26 | Contexto (motivo del vuelo); sin diccionario público de códigos |
+# | `aerolinea_dgac` | Categórica nominal | Dimensión (alta cardinalidad) | 2.568 | No se grafica directamente: códigos internos DGAC |
+# | `modelo_avion` | Categórica nominal | Dimensión (alta cardinalidad) | 1.286 | Contexto para validar `pmd` |
+# | `aeropuerto_dgac_orig_dest` | Categórica nominal / espacial (código) | Dimensión | 1.671 | Origen/destino (no usado: sin coordenadas) |
+# | `matricula` | Textual | **Identificador** de aeronave | 13.835 | Detección de duplicados |
+# | `numero_vuelo` | Textual | Identificador (parcial, 30 % ausente) | 7.442 | No usado |
+# | `es_internacional` | Booleana | Dimensión | 2 | Origen de `tipo_trafico` |
+#
+# La medida principal es **el conteo de operaciones** (cada fila de la bitácora = 1 operación;
+# en el CSV ya viene sumada en `n_operaciones`).
+
+# %% [markdown]
+# ### 9.1 Jerarquías
+#
+# * **Temporal (real):** Año → Mes → Día → Hora. Año y mes existen en ambos archivos; día y hora
+#   sólo en la bitácora.
+# * **Territorial: no existe en los datos.** Hay códigos OACI, pero ninguna columna de región,
+#   ciudad ni coordenadas. Agrupar por región exigiría una tabla externa; no se inventa ese nivel.
+# * **Aeronave (parcial):** `modelo_avion` → `categoria_peso` es una agrupación derivada, no una
+#   jerarquía publicada por la fuente.
+
+# %% [markdown]
+# ## 10. Transformaciones analíticas y agregación (Parte XI)
+
+# %%
+# Agregación SIMPLE: 1 dimensión (aeropuerto) + 1 medida (operaciones), año 2025
+ag_simple = (mensual.query("anio == 2025")
+             .groupby("aeropuerto_oaci")["n_operaciones"].sum()
+             .sort_values(ascending=False))
+print(f"Aeropuertos con operaciones en 2025: {len(ag_simple)} | total: {ag_simple.sum():,}")
+ag_simple.head(10)
+
+# %% [markdown]
+# * **Representa:** total de despegues + aterrizajes de cada aeropuerto en 2025.
+# * **Granularidad:** aeropuerto-año (se suman 12 meses × 2 tipos de tráfico).
+# * **Se pierde:** la variación mensual y la distinción doméstico/internacional.
+# * **Visualización apropiada:** barras horizontales ordenadas (comparación de magnitudes entre categorías nominales).
+
+# %%
+# Agregación MULTIDIMENSIONAL: 2 dimensiones (año, tipo de tráfico) + 1 medida
+ag_multi = mensual.pivot_table(index="anio", columns="tipo_trafico", values="n_operaciones",
+                               aggfunc="sum")
+indice = (ag_multi / ag_multi.loc[2019] * 100).round(1)
+ag_multi.join(indice, rsuffix=" (índice 2019=100)").loc[[2000, 2010, 2019, 2020, 2021, 2022, 2023, 2024, 2025]]
+
+# %% [markdown]
+# * **Representa:** operaciones anuales por tipo de tráfico y su nivel relativo a 2019.
+# * **Granularidad:** año × tipo de tráfico.
+# * **Se pierde:** el detalle por aeropuerto y por mes (la estacionalidad y la caída abrupta de abril 2020 quedan promediadas en el año).
+# * **Visualización apropiada:** líneas (evolución temporal de dos series) sobre el índice, para compartir un eje.
+
+# %%
+# Agregación MULTIDIMENSIONAL (bitácora): hora × categoría de peso + conteo, sólo aterrizajes y despegues
+ag_hora = (b25.query("tipo_operacion in ['A', 'D'] and categoria_peso.notna()", engine="python")
+           .groupby(["categoria_peso", "hora"], observed=True).size()
+           .rename("operaciones").reset_index())
+ag_hora["participacion_en_categoria"] = (ag_hora["operaciones"]
+                                         / ag_hora.groupby("categoria_peso", observed=True)["operaciones"].transform("sum"))
+ag_hora.pivot_table(index="hora", columns="categoria_peso", values="participacion_en_categoria",
+                    observed=True).style.format("{:.1%}").background_gradient(cmap="Blues")
+
+# %% [markdown]
+# * **Granularidad:** categoría de peso × hora local (2025). **Se pierde:** aeropuerto, día y tipo de tráfico.
+# * Se normaliza dentro de cada categoría (participación) porque los volúmenes absolutos difieren mucho;
+#   así se compara la **forma** del día, no el tamaño.
