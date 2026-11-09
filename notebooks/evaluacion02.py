@@ -11,7 +11,11 @@
 # %% [markdown]
 # # Evaluación 2 — Ingeniería y Visualización de Datos de Transporte
 #
-# **Autor:** Felipe Ignacio Zapata Lagos · Ingeniería en Informática · INACAP
+# **Autores:**
+# * Felipe Ignacio Zapata Lagos
+# * Agustín Alejandro Urbina López
+#
+# Ingeniería en Informática · INACAP  
 # **Asignatura:** Visualización de Datos · **Unidad:** Diseño e implementación de gráficos para datos
 #
 # **Fuente:** Junta de Aeronáutica Civil (JAC), *Operaciones de Aeronaves*, Portal de Datos Abiertos

@@ -220,4 +220,7 @@ En Jupyter: *Kernel → Restart & Run All*. La ejecución completa toma 1-2 minu
 
 ## Autor
 
-**Felipe Ignacio Zapata Lagos** — Ingeniería en Informática, INACAP · Asignatura: Visualización de Datos · Noviembre 2026.
+- **Felipe Ignacio Zapata Lagos**
+- **Agustín Alejandro Urbina López**
+
+Ingeniería en Informática, INACAP · Asignatura: Visualización de Datos · Noviembre 2026.
