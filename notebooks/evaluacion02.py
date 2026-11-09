@@ -596,3 +596,247 @@ ag_hora.pivot_table(index="hora", columns="categoria_peso", values="participacio
 # * **Granularidad:** categoría de peso × hora local (2025). **Se pierde:** aeropuerto, día y tipo de tráfico.
 # * Se normaliza dentro de cada categoría (participación) porque los volúmenes absolutos difieren mucho;
 #   así se compara la **forma** del día, no el tamaño.
+
+# %% [markdown]
+# ## 11. Visualizaciones
+#
+# ### 11.1 Matriz de diseño (Parte XII)
+#
+# | Pregunta | Dimensiones | Medidas | Transformación | Representación elegida | Justificación |
+# |---|---|---|---|---|---|
+# | **P1** ¿Qué aeropuertos concentran las operaciones y qué peso tiene el tráfico internacional? | Aeropuerto (nominal), tipo de tráfico (binaria) | Operaciones 2025 | `query` 2025 → `pivot_table` aeropuerto × tráfico → `sort_values` → top 15 | **Barras horizontales apiladas** (Matplotlib) | Comparar magnitudes entre categorías nominales: la longitud sobre una base común es el canal más preciso; horizontales para leer códigos; apilado muestra total y composición |
+# | **P2** ¿Cómo evolucionaron doméstico e internacional y cómo se recuperó cada uno tras 2020? | Año (temporal), tipo de tráfico | Operaciones anuales → índice 2019 = 100 | `groupby` año × tráfico → división por 2019 | **Líneas** (Matplotlib) + benchmark con heatmap | Evolución temporal continua; el índice pone dos series de escala 5:1 en un solo eje sin usar doble eje |
+# | **P3a** ¿Cómo se distribuye el tamaño de las aeronaves que operan? | — | PMD (t) por operación 2025 | Filtro A/D con PMD válido | **Histograma en escala log** (Seaborn) | Distribución de una variable continua muy asimétrica (0,5 t a 640 t) |
+# | **P3b** ¿Difiere el patrón horario según tamaño de aeronave? | Hora local, categoría de peso | % de operaciones de la categoría en cada hora | `groupby` categoría × hora → participación | **Líneas por segmento** (Seaborn) | Relación hora-actividad segmentada; normalizar compara la forma del día |
+# | **Multidim.** ¿Cambió la estacionalidad mensual entre años y tipos de tráfico? | Mes, año, tipo de tráfico | Operaciones mensuales | `groupby` año × mes × tráfico | **Líneas con color = año y faceta = tráfico** (Seaborn `relplot`) | 4 variables: x = mes, y = operaciones, color = año, faceta = tráfico |
+
+# %% [markdown]
+# ### 11.2 Matplotlib — Visualización 1: comparación entre aeropuertos (P1)
+
+# %%
+top_n = 15
+p1 = (mensual.query("anio == 2025")
+      .pivot_table(index="aeropuerto_oaci", columns="tipo_trafico", values="n_operaciones",
+                   aggfunc="sum", fill_value=0))
+p1["Total"] = p1.sum(axis=1)
+p1["participacion_internacional"] = p1["Internacional"] / p1["Total"]
+p1 = p1.sort_values("Total", ascending=False)
+otros = p1.iloc[top_n:]
+p1_top = p1.head(top_n).iloc[::-1]          # invertido: el mayor queda arriba
+print(f"Top {top_n} = {p1.head(top_n)['Total'].sum() / p1['Total'].sum():.1%} del total 2025; "
+      f"otros {len(otros)} aeropuertos = {otros['Total'].sum():,} operaciones")
+p1.head(top_n)
+
+# %%
+fig, ax = plt.subplots(figsize=(9, 6.2))
+y = np.arange(len(p1_top))
+alto = 0.68
+ax.barh(y, p1_top["Doméstico"], height=alto, color=estilo.AZUL, label="Doméstico",
+        edgecolor=estilo.SUPERFICIE, linewidth=1)
+ax.barh(y, p1_top["Internacional"], left=p1_top["Doméstico"], height=alto, color=estilo.NARANJO,
+        label="Internacional", edgecolor=estilo.SUPERFICIE, linewidth=1)
+for yi, (tot, part) in enumerate(zip(p1_top["Total"], p1_top["participacion_internacional"])):
+    etiqueta = estilo.miles(tot) + (f"  ({part:.0%} intl.)" if part >= 0.01 else "")
+    ax.text(tot + p1_top["Total"].max() * 0.01, yi, etiqueta, va="center", fontsize=9, color=estilo.TINTA_2)
+ax.set_yticks(y, p1_top.index)
+ax.tick_params(axis="y", length=0)
+ax.xaxis.set_major_formatter(mticker.FuncFormatter(estilo.miles))
+ax.set_xlim(0, p1_top["Total"].max() * 1.22)
+ax.grid(axis="y", visible=False)
+ax.set_xlabel("Operaciones en 2025 (aterrizajes + despegues)")
+ax.set_title("SCEL concentra un tercio de las operaciones del país y casi todo el tráfico internacional")
+estilo.subtitulo(ax, f"Top {top_n} de {len(p1)} aeropuertos con operaciones en 2025 · código OACI")
+ax.legend(loc="lower right", ncols=2)
+estilo.nota_fuente(fig, "Fuente: JAC/DGAC, «Operaciones en Aeropuertos», datos.gob.cl (CC0). "
+                   "Excluye operaciones militares/policiales y aeródromos no administrados por la DGAC.")
+estilo.guardar(fig, "v1_matplotlib_comparacion_aeropuertos_2025", FIGURAS)
+
+# %% [markdown]
+# **Decisiones de diseño.** Escala lineal desde cero (las barras codifican magnitud por longitud;
+# truncar o usar log distorsionaría la comparación). Orden descendente para que el ranking se lea
+# sin esfuerzo. Color sólo para el tipo de tráfico (azul = doméstico, naranjo = internacional, igual
+# en todas las figuras). Total y % internacional como etiqueta directa, porque los segmentos
+# naranjos de los aeropuertos regionales son demasiado pequeños para leerse por longitud.
+
+# %% [markdown]
+# ### 11.3 Matplotlib — Visualización 2: evolución y recuperación (P2)
+
+# %%
+p2 = (mensual.query("anio_completo")
+      .groupby(["anio", "tipo_trafico"])["n_operaciones"].sum()
+      .unstack("tipo_trafico"))
+p2_indice = p2 / p2.loc[2019] * 100
+anio_recupera = {c: int(p2_indice.loc[2020:, c][p2_indice.loc[2020:, c] >= 100].index.min())
+                 for c in p2_indice.columns}
+print("Primer año en volver al nivel 2019:", anio_recupera)
+p2.join(p2_indice.round(1), rsuffix=" índice").tail(8)
+
+# %%
+fig, ax = plt.subplots(figsize=(10, 5.4))
+ax.axvspan(2019.5, 2021.5, color=estilo.GRILLA, alpha=0.6, lw=0)
+ax.text(2020.5, 128, "Pandemia\n2020-2021", ha="center", va="top", fontsize=9, color=estilo.TINTA_2)
+ax.axhline(100, color=estilo.TINTA_3, lw=1, ls="--")
+ax.text(2000, 101.5, "Nivel 2019 = 100", fontsize=8.5, color=estilo.TINTA_3, va="bottom")
+for serie, color in estilo.COLOR_TRAFICO.items():
+    ax.plot(p2_indice.index, p2_indice[serie], color=color, lw=2.2, marker="o", markersize=4.5,
+            markeredgecolor=estilo.SUPERFICIE, markeredgewidth=1.2)
+    ultimo = p2_indice[serie].iloc[-1]
+    ax.text(2025.35, ultimo, f"{serie}\n{ultimo:.0f}", color=estilo.TINTA, fontsize=9.5,
+            va="center", fontweight="bold")
+    minimo = p2_indice.loc[2020:2021, serie]
+    ax.annotate(f"{minimo.min():.0f}", (minimo.idxmin(), minimo.min()), textcoords="offset points",
+                xytext=(0, -14), ha="center", fontsize=9, color=estilo.TINTA_2)
+ax.set_xlim(1999.5, 2027)
+ax.set_ylim(30, 130)
+ax.set_xticks(range(2000, 2026, 5))
+ax.set_ylabel("Índice de operaciones (2019 = 100)")
+ax.set_title("El tráfico internacional cayó más y tardó un año más que el doméstico en recuperarse")
+estilo.subtitulo(ax, "Operaciones anuales (aterrizajes + despegues), índice base 2019 = 100 · 2000-2025 (años completos)")
+estilo.nota_fuente(fig, f"Fuente: JAC/DGAC, datos.gob.cl. Volumen 2019: doméstico {estilo.miles(p2.loc[2019, 'Doméstico'])}, "
+                   f"internacional {estilo.miles(p2.loc[2019, 'Internacional'])} operaciones.")
+estilo.guardar(fig, "v2_matplotlib_evolucion_indice_2019", FIGURAS)
+
+# %% [markdown]
+# **Por qué un índice y no los valores absolutos.** El tráfico doméstico es ~5 veces el internacional;
+# en un mismo eje absoluto la línea internacional quedaría aplastada contra el piso y su caída sería
+# ilegible. Usar dos ejes Y (uno por serie) haría que el cruce de las líneas dependiera de cómo se
+# eligen las escalas. El índice base 2019 responde exactamente la pregunta (¿cuánto se alejó cada
+# serie de su nivel pre-pandemia?) en un solo eje. Los volúmenes absolutos se declaran en la nota.
+
+# %% [markdown]
+# ### 11.4 Seaborn — Visualización 3: distribución del tamaño de aeronave (P3a)
+
+# %%
+ops25 = b25[b25["tipo_operacion"].isin(["A", "D"])]
+pmd25 = ops25["pmd"].dropna()
+print(f"Operaciones 2025 (A/D): {len(ops25):,} | con PMD válido: {len(pmd25):,} ({len(pmd25) / len(ops25):.1%})")
+print(pmd25.describe(percentiles=[.1, .25, .5, .75, .9]).round(2))
+print("Asimetría:", round(pmd25.skew(), 2), "| asimetría de log10(PMD):", round(np.log10(pmd25).skew(), 2))
+print(ops25["categoria_peso"].value_counts(normalize=True, dropna=False).round(3))
+
+# %%
+fig, ax = plt.subplots(figsize=(10, 5))
+sns.histplot(x=pmd25, log_scale=True, bins=60, stat="percent", color=estilo.AZUL,
+             edgecolor=estilo.SUPERFICIE, linewidth=0.6, ax=ax)
+for umbral, texto in [(prep.UMBRAL_LIGERA_T, "5,7 t\nlímite OACI\naeronave ligera"), (prep.UMBRAL_PESADA_T, "50 t")]:
+    ax.axvline(umbral, color=estilo.TINTA_2, lw=1, ls="--")
+    ax.text(umbral * (1.08 if umbral < 10 else 0.93), ax.get_ylim()[1] * 0.97, texto, fontsize=8.5,
+            color=estilo.TINTA_2, va="top", ha="left" if umbral < 10 else "right")
+ax.axvline(pmd25.median(), color=estilo.NARANJO, lw=1.5)
+ax.text(pmd25.median() * 1.25, ax.get_ylim()[1] * 0.80, f"mediana = {pmd25.median():.0f} t\n(no representa a\nninguna de las dos\npoblaciones)",
+        fontsize=8.5, color=estilo.TINTA, ha="left", va="top")
+ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:g}"))
+ax.set_xlabel("Peso máximo de despegue, PMD (toneladas, escala logarítmica)")
+ax.set_ylabel("% de operaciones")
+ax.grid(axis="x", visible=False)
+ax.set_title("Dos poblaciones: avionetas de ~1 t y aviones comerciales de 70-90 t")
+estilo.subtitulo(ax, f"Distribución del PMD por operación, aterrizajes y despegues 2025 · n = {estilo.miles(len(pmd25))}")
+estilo.nota_fuente(fig, "Fuente: JAC/DGAC, «Bitácora de Vuelos», datos.gob.cl. Excluye operaciones sin PMD válido "
+                   f"({estilo.miles(len(ops25) - len(pmd25))} registros con PMD nulo, 0 o implausible). Línea naranja: mediana.")
+estilo.guardar(fig, "v3_seaborn_distribucion_pmd", FIGURAS)
+
+# %% [markdown]
+# **Análisis de distribución**
+#
+# * **¿Dónde se concentra?** En dos modos: aeronaves livianas de 0,7-2 t (instrucción, aviación general)
+#   y aviones de fuselaje angosto de 70-90 t (A320/A321/B737), que dominan el tráfico comercial.
+# * **¿Asimetría?** Fuerte asimetría positiva en escala lineal; en escala logarítmica la distribución es
+#   **bimodal**, por lo que media y mediana no representan a ninguna de las dos poblaciones.
+# * **¿Dispersión?** Muy alta: más de tres órdenes de magnitud (≈0,5 t a 640 t).
+# * **¿Valores extremos?** Sí: una cola derecha legítima de aviones de fuselaje ancho (≈200-450 t en 2025)
+#   y, en la serie completa, los valores ya tratados como errores (0 t y > 600 t en avionetas).
+# * **Implicación:** cualquier análisis de "tamaño promedio" debe segmentarse; por eso se crea
+#   `categoria_peso` y P3b compara segmentos en vez de promedios.
+
+# %% [markdown]
+# ### 11.5 Seaborn — Visualización 4: patrón horario segmentado por tamaño (P3b)
+
+# %%
+p3 = ag_hora.copy()
+p3["porcentaje"] = p3["participacion_en_categoria"] * 100
+pico = p3.loc[p3.groupby("categoria_peso", observed=True)["porcentaje"].idxmax(), ["categoria_peso", "hora", "porcentaje"]]
+noche = (p3.query("hora <= 5").groupby("categoria_peso", observed=True)["porcentaje"].sum().round(1))
+print("Hora de mayor actividad por categoría:\n", pico.to_string(index=False))
+print("\n% de operaciones entre 00:00 y 05:59:\n", noche.to_string())
+
+# %%
+paleta_peso = dict(zip(p3["categoria_peso"].cat.categories, ["#86b6ef", "#2a78d6", "#104281"]))
+fig, ax = plt.subplots(figsize=(10, 5.2))
+sns.lineplot(data=p3, x="hora", y="porcentaje", hue="categoria_peso", palette=paleta_peso,
+             lw=2.2, marker="o", markersize=5, markeredgecolor=estilo.SUPERFICIE, ax=ax, legend=True)
+ax.axvspan(-0.5, 5.5, color=estilo.GRILLA, alpha=0.5, lw=0)
+ax.text(2.5, ax.get_ylim()[1] * 0.95, "madrugada", ha="center", fontsize=9, color=estilo.TINTA_2, va="top")
+ax.set_xticks(range(0, 24, 2), [f"{h:02d}:00" for h in range(0, 24, 2)])
+ax.set_xlim(-0.5, 23.5)
+ax.set_xlabel("Hora local del aeropuerto")
+ax.set_ylabel("% de las operaciones de la categoría")
+ax.legend(title="Categoría por PMD", loc="upper left", bbox_to_anchor=(0.02, 0.88))
+ax.set_title("Las avionetas vuelan de día; la aviación pesada opera las 24 horas")
+estilo.subtitulo(ax, "Distribución horaria de aterrizajes y despegues 2025 dentro de cada categoría de tamaño (cada línea suma 100 %)")
+estilo.nota_fuente(fig)
+estilo.guardar(fig, "v4_seaborn_patron_horario_por_tamano", FIGURAS)
+
+# %% [markdown]
+# **Lectura.** Se normaliza dentro de cada categoría porque las tres tienen volúmenes distintos; así
+# se compara la *forma* del día. La categoría ligera concentra su actividad entre media mañana y la
+# tarde (vuelo visual diurno, instrucción), mientras que la pesada mantiene actividad relevante de
+# madrugada (vuelos internacionales y de carga). La rampa de un solo tono (claro → oscuro) refleja
+# que la categoría es **ordinal**.
+
+# %% [markdown]
+# ### 11.6 Visualización multidimensional (Parte XV) — estacionalidad por año y tipo de tráfico
+
+# %%
+anios_sel = [2019, 2020, 2022, 2025]
+p5 = (mensual.query("anio in @anios_sel")
+      .groupby(["tipo_trafico", "anio", "mes"])["n_operaciones"].sum().reset_index())
+p5["miles_operaciones"] = p5["n_operaciones"] / 1000
+p5["anio"] = p5["anio"].astype(str)
+p5.pivot_table(index="mes", columns=["tipo_trafico", "anio"], values="n_operaciones").head(4)
+
+# %%
+colores_anio = dict(zip(map(str, anios_sel), [estilo.AZUL, estilo.NARANJO, estilo.AQUA, estilo.AMARILLO]))
+g = sns.relplot(data=p5, x="mes", y="miles_operaciones", hue="anio", col="tipo_trafico",
+                kind="line", palette=colores_anio, lw=2.2, marker="o", markersize=5,
+                markeredgecolor=estilo.SUPERFICIE, height=4.4, aspect=1.2,
+                facet_kws={"sharey": False}, legend=True)
+for ax, (trafico, d) in zip(g.axes.flat, p5.groupby("tipo_trafico")):
+    # etiquetas directas al final de cada línea, separadas para que no se superpongan
+    finales = (d[d["mes"] == 12].set_index("anio")["miles_operaciones"].sort_values())
+    sep = finales.max() * 0.07
+    posiciones, previo = {}, -np.inf
+    for anio, y_fin in finales.items():
+        previo = max(y_fin, previo + sep)
+        posiciones[anio] = previo
+    for anio, y_pos in posiciones.items():
+        ax.text(12.3, y_pos, anio, color=estilo.TINTA, fontsize=9, va="center", fontweight="bold")
+    ax.set_title(trafico, loc="left", fontsize=11.5)
+    ax.set_xticks(range(1, 13), [m[0] for m in prep.MESES])
+    ax.set_xlim(0.6, 13.3)
+    ax.set_ylim(0, None)
+    ax.set_xlabel("Mes")
+g.axes.flat[0].set_ylabel("Operaciones mensuales (miles)")
+g.legend.set_title("Año")
+g.figure.suptitle("Antes y después de la pandemia: la estacionalidad doméstica se mantuvo; "
+                  "la internacional se desplazó hacia arriba", x=0.01, ha="left", fontweight="bold", y=1.14)
+g.figure.text(0.01, 1.055, "Operaciones mensuales por tipo de tráfico · ejes Y independientes (el doméstico es ~5 veces mayor)",
+              fontsize=9.5, color=estilo.TINTA_2)
+estilo.nota_fuente(g.figure)
+estilo.guardar(g.figure, "v5_multidimensional_estacionalidad", FIGURAS)
+
+# %% [markdown]
+# **Justificación de canales visuales**
+#
+# * `mes` → **posición X** → variable ordinal/cíclica; la posición es el canal más preciso y conserva el orden.
+# * `operaciones` (miles) → **posición Y** → la medida cuantitativa debe ir en el canal más preciso.
+# * `año` → **color (tono)** → 4 categorías distinguibles; paleta validada para daltonismo y etiquetas
+#   directas al final de cada línea para no depender sólo del color.
+# * `tipo de tráfico` → **faceta (columna)** → separa dos series de escala 5:1; con ejes Y independientes
+#   cada panel muestra su propia forma (se advierte explícitamente en el subtítulo).
+#
+# **¿Qué ocurriría con una dimensión adicional?** Por ejemplo, agregar el aeropuerto como forma del
+# marcador o tamaño: 4 años × 2 tráficos × N aeropuertos produciría decenas de líneas superpuestas;
+# la forma del marcador es poco discriminable con más de 4-5 valores y el tamaño no se lee con precisión.
+# La carga cognitiva aumentaría (el lector debería cruzar color + forma + panel) y la legibilidad caería.
+# La alternativa correcta sería **más facetas** (una fila por aeropuerto principal) o un gráfico distinto,
+# no más canales sobre el mismo panel.
