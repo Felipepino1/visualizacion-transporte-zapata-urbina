@@ -331,3 +331,146 @@ print("Zona horaria almacenada:", bit_raw["dt_operacion"].dt.tz)
 print("Registros con fecha local en 1999:", (bit_raw["dt_operacion"].dt.year == 1999).sum())
 print("Código de aerolínea numérico (aviación general / privados):",
       bit_raw["aerolinea_dgac"].astype(str).str.match(r"^\d").mean().round(3))
+
+# %% [markdown]
+# ### 6.3 Informe de calidad
+#
+# | Variable | Problema detectado | Evidencia | Decisión adoptada | Justificación |
+# |---|---|---|---|---|
+# | `cnt_operaciones` (CSV) | Nombre distinto al documentado (`n_operaciones`) | Cabecera del archivo vs. documentación JAC | Renombrar a `n_operaciones` | Homologar con la documentación oficial; no altera valores |
+# | `mes_id` (CSV) | Fecha almacenada como entero AAAAMM | `dtype int64`; 321 valores, todos con mes 1-12 | Convertir a `fecha` (datetime) y derivar `anio`, `mes` | Permite ordenar, filtrar y graficar como eje temporal real |
+# | `mes_id` (CSV) | Año 2026 incompleto | Último mes 202609 | Conservar, marcar `anio_completo`; comparaciones anuales usan 2000-2025 | Sumar 9 meses contra 12 sesgaría la tendencia a la baja |
+# | `aeropuerto_oaci` (CSV) | Series con cobertura desigual | Sólo 17 de 69 aeropuertos tienen los 321 meses; SCTI cierra en 2006, SCTC→SCQP en 2014, SCHA→SCAT en 2005 | Conservar sin imputar; comparaciones entre aeropuertos en un año fijo (2025) | Son cambios reales de infraestructura; rellenar con ceros o promedios fabricaría datos |
+# | `cnt_operaciones` (CSV) | Fuerte asimetría (skew 3,49) y concentración (2 aeropuertos = 41 %) | `describe()`, `skew()` | Conservar; usar escala logarítmica o agregación cuando corresponda | No es error: refleja la estructura real del sistema |
+# | Filas (bitácora) | 1.122 duplicados exactos | `duplicated()`: misma matrícula, aeropuerto, tipo y minuto; 1.285 filas involucradas en SCVM 2004-2007 | Eliminar | Una aeronave no puede aterrizar dos veces en el mismo minuto: es duplicación del registro |
+# | `tipo_operacion` | Valor `t` fuera del dominio A/D/W | 1 registro (SCSN, 16-01-2017) | Excluir | Ambiguo (¿despegue?); 1 de 11 M filas no altera resultados y asignarlo sería suponer |
+# | `numero_vuelo`, `modelo_avion`, `modelo_avion_desc` | Ausentes ocultos como cadena vacía | 2.865.981 / 6 / 36.763 cadenas vacías además de 482.145 nulos | Homologar `""` → NaN | Un vacío es un ausente; tratarlo como categoría distorsiona conteos y cardinalidad |
+# | `pmd` | Valores imposibles = 0 | 25.823 registros | Convertir a NaN (sin imputar) | Ninguna aeronave pesa 0 t |
+# | `pmd` | Unidades mezcladas (kg en vez de t) | T34T = 1.340, C210 = 1.500, R44 = 1.000 (aeronaves de ~1-2 t); B38M = 710 | > 600 t → NaN excepto A225 (An-225, 640 t real) | Evita que 1.078 errores inflen la distribución; no se divide por 1.000 porque no hay certeza de la unidad en todos los casos |
+# | `pmd` | Tipo `decimal128` | Esquema parquet; pandas lo leería como objetos `Decimal` | Convertir a `float64` | Permite operar numéricamente y reduce memoria |
+# | `dt_operacion` | Documentación dice UTC, archivo trae zona `America/Santiago`; meses del CSV en hora local de cada aeropuerto | 41 registros caen en 1999 en hora local; diferencias con el CSV concentradas en SCIP y SCCI | Crear `dt_local` con la zona de cada aeropuerto | Es el mismo criterio de la JAC; se valida contra el CSV (sección 7.3) |
+# | `dt_operacion` | Último mes incompleto en la bitácora | Último registro 30-09-2026 20:58 (= 23:58 UTC); el CSV de 202609 es algo mayor | No usar septiembre 2026 de la bitácora para conclusiones | La documentación advierte que t-1 es provisional |
+# | `es_internacional` | Sin problemas | 0 nulos, booleano | Ninguna | — |
+
+# %% [markdown]
+# ## 7. Limpieza y preparación (Parte VIII)
+#
+# ### 7.1 Resumen mensual
+
+# %%
+mensual = prep.preparar_mensual(csv_raw)
+mensual["anio_completo"] = mensual["anio"] <= 2025
+cambios_codigo = (mensual["aeropuerto_oaci"] != csv_raw["aeropuerto_oaci"]).sum()
+print("Códigos de aeropuerto modificados por normalización de cadenas:", cambios_codigo)
+print("Total de operaciones antes/después:", csv_raw["cnt_operaciones"].sum(), mensual["n_operaciones"].sum())
+mensual.head()
+
+# %% [markdown]
+# ### 7.2 Bitácora
+#
+# Cada paso informa cuántas filas o valores afecta, para que la limpieza sea auditable.
+
+# %%
+n0 = len(bit_raw)
+bit = bit_raw.drop_duplicates().copy()
+print(f"Duplicados exactos eliminados: {n0 - len(bit):,}")
+
+n1 = len(bit)
+bit = bit[bit["tipo_operacion"].isin(["A", "D", "W"])].copy()
+bit["tipo_operacion"] = bit["tipo_operacion"].cat.remove_unused_categories()
+print(f"Registros con tipo_operacion fuera de dominio excluidos: {n1 - len(bit):,}")
+
+bit = prep.vacios_a_nulos(bit, ["numero_vuelo", "modelo_avion", "modelo_avion_desc"])
+print("Nulos tras homologar vacíos:",
+      bit[["numero_vuelo", "modelo_avion", "modelo_avion_desc"]].isna().sum().to_dict())
+
+pmd_cero = bit["pmd"] == 0
+pmd_implausible = (bit["pmd"] > prep.PMD_MAX_PLAUSIBLE_T) & (bit["modelo_avion"] != "A225")
+bit.loc[pmd_cero | pmd_implausible, "pmd"] = np.nan
+print(f"pmd = 0 → NaN: {pmd_cero.sum():,} | pmd implausible → NaN: {pmd_implausible.sum():,} | "
+      f"pmd nulo final: {bit['pmd'].isna().sum():,} ({bit['pmd'].isna().mean():.1%})")
+
+bit = prep.agregar_hora_local(bit)
+n2 = len(bit)
+bit = bit[bit["dt_local"] >= "2000-01-01"].copy()
+print(f"Registros previos a 2000 en hora local excluidos: {n2 - len(bit):,}")
+print(f"Filas finales: {len(bit):,} ({len(bit) / n0:.3%} del original)")
+
+# %% [markdown]
+# ### 7.3 Validación cruzada bitácora ↔ CSV
+#
+# Si la limpieza y la hora local están bien construidas, al agregar la bitácora (sin
+# sobrevuelos) por aeropuerto × mes local × tipo de tráfico debería reproducirse el CSV publicado.
+
+# %%
+def agregar_como_csv(df):
+    d = df[df["tipo_operacion"].isin(["A", "D"])]
+    return (d.assign(mes_id=d["dt_local"].dt.year * 100 + d["dt_local"].dt.month,
+                     internacional_domestico=np.where(d["es_internacional"], "I", "D"),
+                     aeropuerto_oaci=d["aeropuerto_oaci"].astype(str))
+            .groupby(["mes_id", "aeropuerto_oaci", "internacional_domestico"])
+            .size().rename("n_bitacora").reset_index())
+
+
+cruce = mensual.merge(agregar_como_csv(bit), how="left",
+                      on=["mes_id", "aeropuerto_oaci", "internacional_domestico"])
+coincide = cruce["n_operaciones"] == cruce["n_bitacora"]
+print(f"Celdas aeropuerto-mes-tráfico idénticas: {coincide.mean():.2%} de {len(cruce):,}")
+dif = cruce[~coincide].assign(diferencia=lambda x: x["n_bitacora"] - x["n_operaciones"])
+print("Celdas distintas por mes:", dif["mes_id"].value_counts().head(5).to_dict())
+print("Diferencia absoluta total (operaciones):", int(dif["diferencia"].abs().sum()),
+      "de", int(mensual["n_operaciones"].sum()))
+
+# Contraprueba: ¿la JAC deduplica? Se repite el cruce con la bitácora CON duplicados
+con_dups = prep.agregar_hora_local(bit_raw[bit_raw["tipo_operacion"].isin(["A", "D"])])
+cruce_dups = mensual.merge(agregar_como_csv(con_dups), how="left",
+                           on=["mes_id", "aeropuerto_oaci", "internacional_domestico"])
+print(f"Coincidencia usando la bitácora SIN eliminar duplicados: "
+      f"{(cruce_dups['n_operaciones'] == cruce_dups['n_bitacora']).mean():.2%}")
+del con_dups, cruce_dups
+
+# %% [markdown]
+# **Resultado.** La bitácora limpia reproduce el CSV en ~99 % de las celdas; las diferencias se
+# concentran en septiembre 2026 (mes provisional y cortado en UTC) y en los meses con duplicados.
+# La contraprueba muestra que el CSV oficial **sí incluye** los duplicados (coincide mejor sin
+# eliminarlos). Por eso: (1) el análisis mensual usa el CSV tal como fue publicado, declarando que
+# puede contener ~0,01 % de registros duplicados, y (2) el análisis a nivel de vuelo usa la
+# bitácora deduplicada. Ver sección de ética.
+
+# %% [markdown]
+# ### 7.4 Justificación de transformaciones principales
+#
+# **Eliminación de duplicados (bitácora)**
+# * *Variable:* fila completa. *Problema:* 1.122 registros idénticos en las 12 columnas.
+# * *Evidencia:* `duplicated()`; casos como CCCYK aterrizando dos veces en SCFA el 01-01-2000 21:31.
+# * *Alternativas:* conservarlos (como hace el CSV oficial) / eliminarlos / marcarlos.
+# * *Decisión:* eliminar. *Justificación:* es físicamente imposible; son errores de captura.
+# * *Efecto potencial:* −0,01 % de filas; afecta sobre todo a SCVM 2004-2007, sin impacto en tendencias nacionales.
+#
+# **`pmd` = 0 o > 600 t → NaN**
+# * *Problema:* valores imposibles o en otra unidad. *Evidencia:* 25.823 ceros; T34T = 1.340 "t".
+# * *Alternativas:* eliminar filas / dividir por 1.000 / imputar la mediana del modelo / NaN.
+# * *Decisión:* NaN sin imputar. *Justificación:* eliminar filas borraría operaciones reales (que sí
+#   cuentan para volúmenes); imputar o reescalar supone información que no tenemos.
+# * *Efecto potencial:* los análisis de tamaño de aeronave excluyen ~2,7 % de operaciones sin PMD válido.
+#
+# **Hora local por aeropuerto (`dt_local`)**
+# * *Problema:* el instante viene en una sola zona; Isla de Pascua y Magallanes tienen otra hora local.
+# * *Alternativas:* usar `America/Santiago` para todo / usar UTC / zona por aeropuerto.
+# * *Decisión:* zona por aeropuerto. *Justificación:* es el criterio documentado por la JAC y la
+#   validación cruzada mejora al aplicarlo (sin él, las diferencias se concentran en SCIP y SCCI).
+# * *Efecto potencial:* cambia la hora del día y el mes asignado a operaciones cercanas a medianoche.
+#
+# **Homologación de cadenas vacías → NaN**
+# * *Problema:* 2,87 M de `numero_vuelo` vacíos que no aparecen como nulos.
+# * *Decisión:* convertir a NaN. *Justificación:* un vacío no es un número de vuelo; el perfil de
+#   nulos subestimaba el problema (4 % declarado vs. 30 % real). *Efecto:* ninguno en conteos de operaciones.
+
+# %% [markdown]
+# ### 7.5 Datasets procesados
+#
+# Se guardan versiones nuevas en `data/processed/`; los archivos de `data/raw/` no se tocan.
+
+# %%
+mensual.to_csv(PROCESSED / "operaciones_mensuales_procesado.csv", index=False)
+print("Guardado: data/processed/operaciones_mensuales_procesado.csv", mensual.shape)
